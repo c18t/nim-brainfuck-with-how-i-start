@@ -1,3 +1,10 @@
+import macros
+
+{.push overflowchecks: off.}
+proc xinc(c: var char) = inc c
+proc xdec(c: var char) = dec c
+{.pop.}
+
 proc interpret*(code: string) =
   ## Interprets the brainfuck `code` string, reading from stdin and writing to
   ## stdout.
@@ -6,11 +13,6 @@ proc interpret*(code: string) =
     tape: seq[char] = newSeq[char]()
     codePos: int = 0
     tapePos: int = 0
-
-  {.push overflowchecks: off.}
-  proc xinc(c: var char) = inc c
-  proc xdec(c: var char) = dec c
-  {.pop.}
 
   proc run(skip = false): bool =
     while tapePos >= 0 and codePos < code.len:
@@ -38,10 +40,78 @@ proc interpret*(code: string) =
 
   discard run()
 
+proc compile(code: string): PNimrodNode {.compiletime.} =
+  var stmts = @[newStmtList()]
+
+  template addStmt(text): typed =
+    stmts[stmts.high].add parseStmt(text)
+
+  addStmt "var tape: array[1_000_000, char]"
+  addStmt "var tapePos = 0"
+
+  for c in code:
+    case c
+    of '+': addStmt "xinc tape[tapePos]"
+    of '-': addStmt "xdec tape[tapePos]"
+    of '>': addStmt "inc tapePos"
+    of '<': addStmt "dec tapePos"
+    of '.': addStmt "stdout.write tape[tapePos]"
+    of ',': addStmt "tape[tapePos] = stdin.readChar"
+    of '[': stmts.add newStmtList()
+    of ']':
+      var loop = newNimNode(nnkWhileStmt)
+      loop.add parseExpr("tape[tapePos] != '\\0'")
+      loop.add stmts.pop
+      stmts[stmts.high].add loop
+    else: discard
+
+  result = stmts[0]
+  echo result.repr
+
+macro compileString*(code: string): typed =
+  ## Compiles the brainfuck `code` string into Nim code that reads from stdin
+  ## and writes to stdout.
+  compile code.strval
+
+macro compileFile*(filename: string): typed =
+  ## Compiles the brainfuck code read from `filename` at compile time into Nim
+  ## code that reads from stdin and writes to stdout.
+  compile staticRead(filename.strval)
+
+static:
+  discard compile "+>+[-]>,."
+
+dumpTree:
+  while tape[tapePos] != '\0':
+    inc tapePos
+
 when isMainModule:
-  import os
+  import docopt, tables, strutils
 
-  let code = if paramCount() > 0: readFile paramStr(1)
-             else: readAll stdin
+  proc mandelbrot = compileFile("../examples/mandelbrot.b")
 
-  interpret code
+  let doc = """
+brainfuck
+
+Usage:
+  brainfuck mandelbrot
+  brainfuck interpret [<file.b>]
+  brainfuck (-h | --help)
+  brainfuck (-v | --version)
+
+Options:
+  -h --help     Show this screen.
+  -v --version  Show version.
+"""
+
+  let args = docopt(doc, version = "brainfuck 1.0")
+
+  if args["mandelbrot"]:
+    mandelbrot()
+
+  elif args["interpret"]:
+    let code = if args["<file.b>"]: readFile($args["<file.b>"])
+               else: readAll stdin
+
+    interpret(code)
+
